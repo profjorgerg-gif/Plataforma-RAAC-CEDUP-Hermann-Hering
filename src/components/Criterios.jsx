@@ -2,58 +2,49 @@ import { useState } from 'react'
 import { CRITERIOS } from '../situacoesPadrao'
 import { criterioLabel } from '../utils'
 
-export default function Criterios({ data, actions }) {
-  const [professorAtual, setProfessorAtual] = useState(data.professorAtual)
+export default function Criterios({ data, actions, perfil }) {
   const [editCodigo, setEditCodigo] = useState(null) // codigo da situação em edição, ou 'novo', ou null
+  const souMestre = !perfil || perfil.role === 'mestre' // sem Firebase configurado, libera tudo (modo local)
 
   const editando = editCodigo && editCodigo !== 'novo' ? data.situacoes.find((s) => s.codigo === editCodigo) : null
-  const mostrarForm = editCodigo !== null
+  const mostrarForm = souMestre && editCodigo !== null
 
   return (
     <>
       <div className="page-head">
         <div>
           <h1>Critérios & Configurações</h1>
-          <div className="sub">Tabela de descontos usada nos registros e preferências gerais</div>
-        </div>
-      </div>
-
-      <div className="card">
-        <h3 style={{ marginBottom: 10 }}>Professor responsável pelos lançamentos</h3>
-        <p style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 12 }}>
-          Usado para registrar quem lançou cada ocorrência (útil quando mais de um professor usa o sistema).
-        </p>
-        <div className="row">
-          <div className="field" style={{ maxWidth: 320 }}>
-            <input type="text" value={professorAtual} onChange={(e) => setProfessorAtual(e.target.value)} placeholder="Nome do professor" />
-          </div>
-          <div className="field" style={{ flex: 0, display: 'flex', alignItems: 'flex-end' }}>
-            <button className="btn btn-primary" onClick={() => actions.salvarProfessorAtual(professorAtual)}>
-              Salvar
-            </button>
-          </div>
+          <div className="sub">Tabela de descontos usada nos registros</div>
         </div>
       </div>
 
       <div className="card">
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14, flexWrap: 'wrap', gap: 10 }}>
           <h3>Tabela de critérios e descontos</h3>
-          <div style={{ display: 'flex', gap: 8 }}>
-            <button className="btn btn-accent btn-sm" onClick={() => setEditCodigo('novo')}>
-              + Nova situação
-            </button>
-            <button
-              className="btn btn-ghost btn-sm"
-              onClick={() => {
-                if (window.confirm('Restaurar a tabela de critérios para os valores padrão? Suas alterações na tabela serão perdidas (os registros já lançados não são afetados).')) {
-                  actions.restaurarSituacoesPadrao()
-                }
-              }}
-            >
-              Restaurar padrão
-            </button>
-          </div>
+          {souMestre && (
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button className="btn btn-accent btn-sm" onClick={() => setEditCodigo('novo')}>
+                + Nova situação
+              </button>
+              <button
+                className="btn btn-ghost btn-sm"
+                onClick={() => {
+                  if (window.confirm('Restaurar a tabela de critérios para os valores padrão? Suas alterações na tabela serão perdidas (os registros já lançados não são afetados).')) {
+                    actions.restaurarSituacoesPadrao()
+                  }
+                }}
+              >
+                Restaurar padrão
+              </button>
+            </div>
+          )}
         </div>
+
+        {!souMestre && (
+          <p style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 14 }}>
+            Somente o usuário mestre pode editar esta tabela. Fale com a coordenação se algum valor precisar mudar.
+          </p>
+        )}
 
         {mostrarForm && (
           <SituacaoForm
@@ -76,7 +67,7 @@ export default function Criterios({ data, actions }) {
                 <th>Situação observada</th>
                 <th>Desconto</th>
                 <th>Reincidência de</th>
-                <th></th>
+                {souMestre && <th></th>}
               </tr>
             </thead>
             <tbody>
@@ -87,21 +78,23 @@ export default function Criterios({ data, actions }) {
                   <td>{s.label}</td>
                   <td>-{s.desconto.toFixed(1)}</td>
                   <td>{s.reincidenciaDe || '—'}</td>
-                  <td style={{ whiteSpace: 'nowrap' }}>
-                    <button className="btn btn-sm btn-ghost" onClick={() => setEditCodigo(s.codigo)}>
-                      Editar
-                    </button>{' '}
-                    <button
-                      className="btn btn-sm btn-danger"
-                      onClick={() => {
-                        if (window.confirm('Excluir esta situação da tabela de critérios? Registros já lançados com ela são mantidos no histórico.')) {
-                          actions.excluirSituacao(s.codigo)
-                        }
-                      }}
-                    >
-                      Excluir
-                    </button>
-                  </td>
+                  {souMestre && (
+                    <td style={{ whiteSpace: 'nowrap' }}>
+                      <button className="btn btn-sm btn-ghost" onClick={() => setEditCodigo(s.codigo)}>
+                        Editar
+                      </button>{' '}
+                      <button
+                        className="btn btn-sm btn-danger"
+                        onClick={() => {
+                          if (window.confirm('Excluir esta situação da tabela de critérios? Registros já lançados com ela são mantidos no histórico.')) {
+                            actions.excluirSituacao(s.codigo)
+                          }
+                        }}
+                      >
+                        Excluir
+                      </button>
+                    </td>
+                  )}
                 </tr>
               ))}
             </tbody>

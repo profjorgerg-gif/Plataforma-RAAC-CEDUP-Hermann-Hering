@@ -1,4 +1,4 @@
-export default function Sidebar({ menu, ui, patchUi, onExit }) {
+export default function Sidebar({ menu, ui, patchUi, perfil, onSair, onBackup }) {
   return (
     <aside id="sidebar" className={ui.sidebarOpen ? 'open' : ''}>
       <div className="brand">
@@ -22,9 +22,23 @@ export default function Sidebar({ menu, ui, patchUi, onExit }) {
         ))}
       </nav>
       <div className="sidebar-foot">
-        <button className="exit-btn" onClick={onExit}>
-          ⭳ Backup e sair
+        {perfil && (
+          <div style={{ fontSize: 12, color: 'rgba(255,255,255,.65)', marginBottom: 10, wordBreak: 'break-all' }}>
+            {perfil.email}
+            <br />
+            <span className="badge neutro" style={{ marginTop: 4 }}>
+              {perfil.role === 'mestre' ? 'Usuário mestre' : 'Professor'}
+            </span>
+          </div>
+        )}
+        <button className="exit-btn" onClick={onBackup} style={{ marginBottom: onSair ? 8 : 0 }}>
+          ⭳ Baixar backup
         </button>
+        {onSair && (
+          <button className="exit-btn" onClick={onSair}>
+            🚪 Sair
+          </button>
+        )}
       </div>
     </aside>
   )
