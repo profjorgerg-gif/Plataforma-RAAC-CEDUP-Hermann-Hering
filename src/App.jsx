@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { loadState, saveState } from './dataStore'
+import { loadState, saveState, estadoInicial } from './dataStore'
+import { firebaseAtivo } from './firebaseConfig'
+import * as cloud from './cloudSync'
 import { SITUACOES_PADRAO, PERIODOS } from './situacoesPadrao'
 import { uid, criarAluno, downloadJSON } from './utils'
 
@@ -15,7 +17,9 @@ import Toast from './components/Toast.jsx'
 const anoAtual = String(new Date().getFullYear())
 
 export default function App() {
-  const [data, setData] = useState(() => loadState())
+  const [data, setData] = useState(() => (firebaseAtivo ? estadoInicial() : loadState()))
+  const [carregando, setCarregando] = useState(firebaseAtivo)
+  const [erroConexao, setErroConexao] = useState(null)
   const [ui, setUi] = useState({
     view: 'dashboard',
     turmaId: null,
@@ -30,14 +34,46 @@ export default function App() {
   const [toast, setToast] = useState(null)
   const toastTimer = useRef(null)
 
+  // Carrega os dados: do Firestore em tempo real (se configurado) ou do
+  // localStorage (uma vez, como no protótipo).
   useEffect(() => {
-    saveState(data)
+    if (!firebaseAtivo) return
+    let unsub
+    let cancelado = false
+    cloud
+      .subscribeToData((d) => {
+        if (cancelado) return
+        setData(d)
+        setCarregando(false)
+      })
+      .then((u) => {
+        if (cancelado) u()
+        else unsub = u
+      })
+      .catch((err) => {
+        console.error(err)
+        setErroConexao(err.message || String(err))
+        setCarregando(false)
+      })
+    return () => {
+      cancelado = true
+      if (unsub) unsub()
+    }
+  }, [])
+
+  // Sem Firebase configurado: continua salvando no navegador, como o protótipo.
+  useEffect(() => {
+    if (!firebaseAtivo) saveState(data)
   }, [data])
 
   function notify(msg) {
     setToast(msg)
     window.clearTimeout(toastTimer.current)
     toastTimer.current = window.setTimeout(() => setToast(null), 2600)
+  }
+  function avisarErro(err) {
+    console.error(err)
+    notify('Não foi possível salvar agora — verifique sua conexão.')
   }
 
   function patchUi(patch) {
@@ -46,112 +82,164 @@ export default function App() {
 
   // ---------- ações: turmas ----------
   function criarTurma({ nome, disciplina, professor, ano }) {
-    setData((d) => ({
-      ...d,
-      turmas: [...d.turmas, { id: uid('turma'), nome, disciplina: disciplina || '—', professor, ano: ano || anoAtual }],
-    }))
+    if (firebaseAtivo) {
+      cloud.criarTurma({ nome, disciplina, professor, ano }).catch(avisarErro)
+    } else {
+      setData((d) => ({
+        ...d,
+        turmas: [...d.turmas, { id: uid('turma'), nome, disciplina: disciplina || '—', professor, ano: ano || anoAtual }],
+      }))
+    }
     notify('Turma criada.')
   }
   function excluirTurma(id) {
-    setData((d) => ({
-      ...d,
-      turmas: d.turmas.filter((t) => t.id !== id),
-      alunos: d.alunos.filter((a) => a.turmaId !== id),
-      registros: d.registros.filter((r) => r.turmaId !== id),
-      observacoesPeriodo: d.observacoesPeriodo.filter((o) => o.turmaId !== id),
-    }))
+    if (firebaseAtivo) {
+      cloud.excluirTurma(id).catch(avisarErro)
+    } else {
+      setData((d) => ({
+        ...d,
+        turmas: d.turmas.filter((t) => t.id !== id),
+        alunos: d.alunos.filter((a) => a.turmaId !== id),
+        registros: d.registros.filter((r) => r.turmaId !== id),
+        observacoesPeriodo: d.observacoesPeriodo.filter((o) => o.turmaId !== id),
+      }))
+    }
     patchUi({ turmaId: null })
     notify('Turma excluída.')
   }
 
   // ---------- ações: alunos ----------
   function adicionarAluno(nome, matricula, turmaId) {
-    setData((d) => ({ ...d, alunos: [...d.alunos, criarAluno(nome, matricula, turmaId)] }))
+    if (firebaseAtivo) {
+      cloud.adicionarAluno(nome, matricula, turmaId).catch(avisarErro)
+    } else {
+      setData((d) => ({ ...d, alunos: [...d.alunos, criarAluno(nome, matricula, turmaId)] }))
+    }
     notify('Aluno adicionado.')
   }
   function importarAlunos(rows, turmaId) {
-    setData((d) => ({
-      ...d,
-      alunos: [...d.alunos, ...rows.filter((r) => r.nome.trim()).map((r) => criarAluno(r.nome.trim(), r.matricula.trim(), turmaId))],
-    }))
+    if (firebaseAtivo) {
+      cloud.importarAlunos(rows, turmaId).catch(avisarErro)
+    } else {
+      setData((d) => ({
+        ...d,
+        alunos: [...d.alunos, ...rows.filter((r) => r.nome.trim()).map((r) => criarAluno(r.nome.trim(), r.matricula.trim(), turmaId))],
+      }))
+    }
     notify(`${rows.length} aluno(s) importado(s).`)
   }
   function excluirAluno(id) {
-    setData((d) => ({ ...d, alunos: d.alunos.filter((a) => a.id !== id) }))
+    if (firebaseAtivo) {
+      cloud.excluirAluno(id).catch(avisarErro)
+    } else {
+      setData((d) => ({ ...d, alunos: d.alunos.filter((a) => a.id !== id) }))
+    }
     notify('Aluno excluído.')
   }
   function moverAluno(alunoId, novaTurmaId) {
-    setData((d) => ({
-      ...d,
-      alunos: d.alunos.map((a) => {
-        if (a.id !== alunoId || a.turmaId === novaTurmaId) return a
-        const origemId = a.turmaOrigemId || a.turmaId
-        const historico = a.historicoTurmas || [{ turmaId: a.turmaId, data: new Date().toISOString() }]
-        return {
-          ...a,
-          turmaOrigemId: origemId,
-          turmaId: novaTurmaId,
-          historicoTurmas: [...historico, { turmaId: novaTurmaId, data: new Date().toISOString() }],
-        }
-      }),
-    }))
+    const aluno = data.alunos.find((a) => a.id === alunoId)
+    if (!aluno || aluno.turmaId === novaTurmaId) return
+    if (firebaseAtivo) {
+      cloud.moverAluno(aluno, novaTurmaId).catch(avisarErro)
+    } else {
+      setData((d) => ({
+        ...d,
+        alunos: d.alunos.map((a) => {
+          if (a.id !== alunoId) return a
+          const origemId = a.turmaOrigemId || a.turmaId
+          const historico = a.historicoTurmas || [{ turmaId: a.turmaId, data: new Date().toISOString() }]
+          return {
+            ...a,
+            turmaOrigemId: origemId,
+            turmaId: novaTurmaId,
+            historicoTurmas: [...historico, { turmaId: novaTurmaId, data: new Date().toISOString() }],
+          }
+        }),
+      }))
+    }
     notify('Aluno movido de turma.')
   }
 
   // ---------- ações: registros (ocorrências) ----------
   function salvarRegistro(reg) {
-    setData((d) => ({ ...d, registros: [...d.registros, { id: uid('reg'), ...reg }] }))
+    if (firebaseAtivo) {
+      cloud.salvarRegistro(reg).catch(avisarErro)
+    } else {
+      setData((d) => ({ ...d, registros: [...d.registros, { id: uid('reg'), ...reg }] }))
+    }
     notify('Registro salvo.')
   }
   function salvarRegistrosEmLote(alunoIds, base) {
-    setData((d) => ({
-      ...d,
-      registros: [...d.registros, ...alunoIds.map((alunoId) => ({ id: uid('reg'), alunoId, ...base }))],
-    }))
+    if (firebaseAtivo) {
+      cloud.salvarRegistrosEmLote(alunoIds, base).catch(avisarErro)
+    } else {
+      setData((d) => ({
+        ...d,
+        registros: [...d.registros, ...alunoIds.map((alunoId) => ({ id: uid('reg'), alunoId, ...base }))],
+      }))
+    }
     notify(`Registro aplicado a ${alunoIds.length} aluno(s).`)
   }
   function excluirRegistro(id) {
-    setData((d) => ({ ...d, registros: d.registros.filter((r) => r.id !== id) }))
+    if (firebaseAtivo) {
+      cloud.excluirRegistro(id).catch(avisarErro)
+    } else {
+      setData((d) => ({ ...d, registros: d.registros.filter((r) => r.id !== id) }))
+    }
     notify('Registro excluído.')
   }
   function salvarObservacoes(chave, observacoes, outros) {
-    setData((d) => {
-      const existe = d.observacoesPeriodo.some(
-        (o) => o.alunoId === chave.alunoId && o.turmaId === chave.turmaId && o.periodo === chave.periodo && o.ano === chave.ano
-      )
-      const lista = existe
-        ? d.observacoesPeriodo.map((o) =>
-            o.alunoId === chave.alunoId && o.turmaId === chave.turmaId && o.periodo === chave.periodo && o.ano === chave.ano
-              ? { ...o, observacoes, outros }
-              : o
-          )
-        : [...d.observacoesPeriodo, { id: uid('obs'), ...chave, observacoes, outros }]
-      return { ...d, observacoesPeriodo: lista }
-    })
+    const existente = data.observacoesPeriodo.find(
+      (o) => o.alunoId === chave.alunoId && o.turmaId === chave.turmaId && o.periodo === chave.periodo && o.ano === chave.ano
+    )
+    if (firebaseAtivo) {
+      cloud.salvarObservacoes(chave, existente ? existente.id : null, observacoes, outros).catch(avisarErro)
+    } else {
+      setData((d) => {
+        const lista = existente
+          ? d.observacoesPeriodo.map((o) => (o.id === existente.id ? { ...o, observacoes, outros } : o))
+          : [...d.observacoesPeriodo, { id: uid('obs'), ...chave, observacoes, outros }]
+        return { ...d, observacoesPeriodo: lista }
+      })
+    }
     notify('Observações salvas.')
   }
 
   // ---------- ações: critérios/situações ----------
   function salvarSituacao(situacao, codigoOriginal) {
-    setData((d) => {
-      const existe = codigoOriginal && d.situacoes.some((s) => s.codigo === codigoOriginal)
-      const situacoes = existe
-        ? d.situacoes.map((s) => (s.codigo === codigoOriginal ? situacao : s))
-        : [...d.situacoes, situacao]
-      return { ...d, situacoes }
-    })
+    if (firebaseAtivo) {
+      cloud.salvarSituacao(data.situacoes, situacao, codigoOriginal).catch(avisarErro)
+    } else {
+      setData((d) => {
+        const existe = codigoOriginal && d.situacoes.some((s) => s.codigo === codigoOriginal)
+        const situacoes = existe ? d.situacoes.map((s) => (s.codigo === codigoOriginal ? situacao : s)) : [...d.situacoes, situacao]
+        return { ...d, situacoes }
+      })
+    }
     notify('Situação salva.')
   }
   function excluirSituacao(codigo) {
-    setData((d) => ({ ...d, situacoes: d.situacoes.filter((s) => s.codigo !== codigo) }))
+    if (firebaseAtivo) {
+      cloud.excluirSituacao(data.situacoes, codigo).catch(avisarErro)
+    } else {
+      setData((d) => ({ ...d, situacoes: d.situacoes.filter((s) => s.codigo !== codigo) }))
+    }
     notify('Situação excluída.')
   }
   function restaurarSituacoesPadrao() {
-    setData((d) => ({ ...d, situacoes: JSON.parse(JSON.stringify(SITUACOES_PADRAO)) }))
+    if (firebaseAtivo) {
+      cloud.restaurarSituacoesPadrao().catch(avisarErro)
+    } else {
+      setData((d) => ({ ...d, situacoes: JSON.parse(JSON.stringify(SITUACOES_PADRAO)) }))
+    }
     notify('Tabela restaurada.')
   }
   function salvarProfessorAtual(nome) {
-    setData((d) => ({ ...d, professorAtual: nome }))
+    if (firebaseAtivo) {
+      cloud.salvarProfessorAtual(nome).catch(avisarErro)
+    } else {
+      setData((d) => ({ ...d, professorAtual: nome }))
+    }
     notify('Preferência salva.')
   }
 
@@ -162,8 +250,16 @@ export default function App() {
     notify('Backup baixado.')
   }
   function restaurarBackup(novoEstado) {
-    setData(novoEstado)
-    notify('Backup restaurado.')
+    if (firebaseAtivo) {
+      notify('Restaurando backup no Firestore…')
+      cloud
+        .restaurarBackupNoFirestore(novoEstado)
+        .then(() => notify('Backup restaurado.'))
+        .catch(avisarErro)
+    } else {
+      setData(novoEstado)
+      notify('Backup restaurado.')
+    }
   }
   function backupESair() {
     exportarBackup()
@@ -175,7 +271,6 @@ export default function App() {
     const turmaId = uid('turma')
     const ano = anoAtual
     const professorAtual = data.professorAtual || 'Prof. Jorge Lima Cardoso'
-    const turma = { id: turmaId, nome: '3º ADM T1', disciplina: 'Gestão de Pessoas', professor: professorAtual, ano }
     const nomes = [
       'Ana Beatriz Souza',
       'Carlos Eduardo Lima',
@@ -212,13 +307,19 @@ export default function App() {
       addReg('Fernanda Ribeiro', '3.1', 'Discussão com colega em sala.'),
       addReg('Fernanda Ribeiro', '2.1', 'Chegou atrasada.'),
     ]
-    setData((d) => ({
-      ...d,
-      professorAtual,
-      turmas: [...d.turmas, turma],
-      alunos: [...d.alunos, ...alunosNovos],
-      registros: [...d.registros, ...registrosNovos],
-    }))
+    const turma = { id: turmaId, nome: '3º ADM T1', disciplina: 'Gestão de Pessoas', professor: professorAtual, ano }
+
+    if (firebaseAtivo) {
+      cloud.carregarDemoNoFirestore(turma, alunosNovos, registrosNovos, professorAtual).catch(avisarErro)
+    } else {
+      setData((d) => ({
+        ...d,
+        professorAtual,
+        turmas: [...d.turmas, turma],
+        alunos: [...d.alunos, ...alunosNovos],
+        registros: [...d.registros, ...registrosNovos],
+      }))
+    }
     notify('Dados de exemplo carregados.')
   }
 
@@ -270,6 +371,28 @@ export default function App() {
           </p>
           <button className="btn btn-primary" onClick={() => patchUi({ exited: false })}>
             Voltar ao sistema
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  if (carregando) {
+    return (
+      <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-secondary)' }}>
+        Conectando ao banco de dados…
+      </div>
+    )
+  }
+
+  if (erroConexao) {
+    return (
+      <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <div className="card" style={{ maxWidth: 480, textAlign: 'center' }}>
+          <h2>Não foi possível conectar</h2>
+          <p style={{ color: 'var(--text-secondary)', margin: '10px 0' }}>{erroConexao}</p>
+          <button className="btn btn-primary" onClick={() => window.location.reload()}>
+            Tentar novamente
           </button>
         </div>
       </div>
