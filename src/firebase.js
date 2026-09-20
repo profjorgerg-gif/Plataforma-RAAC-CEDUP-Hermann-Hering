@@ -1,5 +1,5 @@
 import { initializeApp } from 'firebase/app'
-import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth'
+import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut } from 'firebase/auth'
 import { getFirestore } from 'firebase/firestore'
 import { firebaseConfig, firebaseAtivo } from './firebaseConfig'
 
@@ -17,23 +17,21 @@ if (firebaseAtivo) {
 
 export { auth, db }
 
-// Faz o login anônimo (necessário porque as regras do Firestore exigem
-// request.auth != null) e só resolve quando o usuário já está autenticado.
-// Quando o professor logar de verdade (Etapa 4), este login anônimo é
-// substituído por um login real, sem precisar mudar o resto do sistema.
-export function aguardarAutenticacao() {
-  if (!firebaseAtivo) return Promise.resolve(null)
-  return new Promise((resolve, reject) => {
-    const unsub = onAuthStateChanged(
-      auth,
-      (user) => {
-        if (user) {
-          unsub()
-          resolve(user)
-        }
-      },
-      reject
-    )
-    signInAnonymously(auth).catch(reject)
-  })
+// Chama o callback sempre que o estado de login mudar: com o usuário (logado)
+// ou com null (deslogado). Usado pelo App para decidir entre mostrar a tela
+// de login ou o sistema.
+export function aoMudarAutenticacao(callback) {
+  if (!firebaseAtivo) {
+    callback(null)
+    return () => {}
+  }
+  return onAuthStateChanged(auth, callback)
+}
+
+export function entrar(email, senha) {
+  return signInWithEmailAndPassword(auth, email, senha)
+}
+
+export function sair() {
+  return signOut(auth)
 }

@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { loadState, saveState, estadoInicial } from './dataStore'
-import { firebaseAtivo } from './firebaseConfig'
+import { firebaseAtivo, aoMudarAutenticacao, sair } from './firebase'
 import * as cloud from './cloudSync'
 import { SITUACOES_PADRAO, PERIODOS } from './situacoesPadrao'
 import { uid, criarAluno, downloadJSON } from './utils'
 
+import Login from './components/Login.jsx'
 import Sidebar from './components/Sidebar.jsx'
 import Dashboard from './components/Dashboard.jsx'
 import Turmas from './components/Turmas.jsx'
@@ -17,6 +18,9 @@ import Toast from './components/Toast.jsx'
 const anoAtual = String(new Date().getFullYear())
 
 export default function App() {
+  // user: undefined = ainda verificando · null = deslogado · objeto = logado
+  const [user, setUser] = useState(firebaseAtivo ? undefined : null)
+  const [perfil, setPerfil] = useState(null) // { uid, email, role }
   const [data, setData] = useState(() => (firebaseAtivo ? estadoInicial() : loadState()))
   const [carregando, setCarregando] = useState(firebaseAtivo)
   const [erroConexao, setErroConexao] = useState(null)
@@ -29,25 +33,37 @@ export default function App() {
     relAlunoId: null,
     relTab: 'turma',
     sidebarOpen: false,
-    exited: false,
   })
   const [toast, setToast] = useState(null)
   const toastTimer = useRef(null)
 
-  // Carrega os dados: do Firestore em tempo real (se configurado) ou do
-  // localStorage (uma vez, como no protótipo).
+  // Observa o login/logout.
   useEffect(() => {
     if (!firebaseAtivo) return
+    return aoMudarAutenticacao(setUser)
+  }, [])
+
+  // Assim que alguém loga, garante o perfil (usuarios/{uid}) e liga a
+  // sincronização em tempo real com o Firestore, já filtrada por dono
+  // (ou sem filtro, se for o usuário mestre).
+  useEffect(() => {
+    if (!firebaseAtivo || !user) return
     let unsub
     let cancelado = false
+    setCarregando(true)
     cloud
-      .subscribeToData((d) => {
+      .garantirUsuario(user)
+      .then((p) => {
         if (cancelado) return
-        setData(d)
-        setCarregando(false)
+        setPerfil(p)
+        return cloud.subscribeToData((d) => {
+          if (cancelado) return
+          setData(d)
+          setCarregando(false)
+        }, p)
       })
       .then((u) => {
-        if (cancelado) u()
+        if (cancelado) u && u()
         else unsub = u
       })
       .catch((err) => {
@@ -59,7 +75,7 @@ export default function App() {
       cancelado = true
       if (unsub) unsub()
     }
-  }, [])
+  }, [user])
 
   // Sem Firebase configurado: continua salvando no navegador, como o protótipo.
   useEffect(() => {
@@ -80,10 +96,15 @@ export default function App() {
     setUi((u) => ({ ...u, ...patch }))
   }
 
+  function turmaAtual(turmaId) {
+    return data.turmas.find((t) => t.id === turmaId)
+  }
+  const meuUid = perfil ? perfil.uid : null
+
   // ---------- ações: turmas ----------
   function criarTurma({ nome, disciplina, professor, ano }) {
     if (firebaseAtivo) {
-      cloud.criarTurma({ nome, disciplina, professor, ano }).catch(avisarErro)
+      cloud.criarTurma({ nome, disciplina, professor, ano }, meuUid).catch(avisarErro)
     } else {
       setData((d) => ({
         ...d,
@@ -110,16 +131,18 @@ export default function App() {
 
   // ---------- ações: alunos ----------
   function adicionarAluno(nome, matricula, turmaId) {
+    const dono = firebaseAtivo ? (turmaAtual(turmaId) || {}).professorUid || meuUid : null
     if (firebaseAtivo) {
-      cloud.adicionarAluno(nome, matricula, turmaId).catch(avisarErro)
+      cloud.adicionarAluno(nome, matricula, turmaId, dono).catch(avisarErro)
     } else {
       setData((d) => ({ ...d, alunos: [...d.alunos, criarAluno(nome, matricula, turmaId)] }))
     }
     notify('Aluno adicionado.')
   }
   function importarAlunos(rows, turmaId) {
+    const dono = firebaseAtivo ? (turmaAtual(turmaId) || {}).professorUid || meuUid : null
     if (firebaseAtivo) {
-      cloud.importarAlunos(rows, turmaId).catch(avisarErro)
+      cloud.importarAlunos(rows, turmaId, dono).catch(avisarErro)
     } else {
       setData((d) => ({
         ...d,
@@ -140,7 +163,8 @@ export default function App() {
     const aluno = data.alunos.find((a) => a.id === alunoId)
     if (!aluno || aluno.turmaId === novaTurmaId) return
     if (firebaseAtivo) {
-      cloud.moverAluno(aluno, novaTurmaId).catch(avisarErro)
+      const novoDono = (turmaAtual(novaTurmaId) || {}).professorUid || meuUid
+      cloud.moverAluno(aluno, novaTurmaId, novoDono).catch(avisarErro)
     } else {
       setData((d) => ({
         ...d,
@@ -162,20 +186,24 @@ export default function App() {
 
   // ---------- ações: registros (ocorrências) ----------
   function salvarRegistro(reg) {
+    const dono = firebaseAtivo ? (turmaAtual(reg.turmaId) || {}).professorUid || meuUid : null
+    const regCompleto = { ...reg, lancadoPor: (perfil && perfil.email) || '' }
     if (firebaseAtivo) {
-      cloud.salvarRegistro(reg).catch(avisarErro)
+      cloud.salvarRegistro(regCompleto, dono).catch(avisarErro)
     } else {
-      setData((d) => ({ ...d, registros: [...d.registros, { id: uid('reg'), ...reg }] }))
+      setData((d) => ({ ...d, registros: [...d.registros, { id: uid('reg'), ...regCompleto }] }))
     }
     notify('Registro salvo.')
   }
   function salvarRegistrosEmLote(alunoIds, base) {
+    const dono = firebaseAtivo ? (turmaAtual(base.turmaId) || {}).professorUid || meuUid : null
+    const baseCompleta = { ...base, lancadoPor: (perfil && perfil.email) || '' }
     if (firebaseAtivo) {
-      cloud.salvarRegistrosEmLote(alunoIds, base).catch(avisarErro)
+      cloud.salvarRegistrosEmLote(alunoIds, baseCompleta, dono).catch(avisarErro)
     } else {
       setData((d) => ({
         ...d,
-        registros: [...d.registros, ...alunoIds.map((alunoId) => ({ id: uid('reg'), alunoId, ...base }))],
+        registros: [...d.registros, ...alunoIds.map((alunoId) => ({ id: uid('reg'), alunoId, ...baseCompleta }))],
       }))
     }
     notify(`Registro aplicado a ${alunoIds.length} aluno(s).`)
@@ -193,7 +221,8 @@ export default function App() {
       (o) => o.alunoId === chave.alunoId && o.turmaId === chave.turmaId && o.periodo === chave.periodo && o.ano === chave.ano
     )
     if (firebaseAtivo) {
-      cloud.salvarObservacoes(chave, existente ? existente.id : null, observacoes, outros).catch(avisarErro)
+      const dono = (turmaAtual(chave.turmaId) || {}).professorUid || meuUid
+      cloud.salvarObservacoes(chave, existente ? existente.id : null, observacoes, outros, dono).catch(avisarErro)
     } else {
       setData((d) => {
         const lista = existente
@@ -205,7 +234,7 @@ export default function App() {
     notify('Observações salvas.')
   }
 
-  // ---------- ações: critérios/situações ----------
+  // ---------- ações: critérios/situações (somente mestre) ----------
   function salvarSituacao(situacao, codigoOriginal) {
     if (firebaseAtivo) {
       cloud.salvarSituacao(data.situacoes, situacao, codigoOriginal).catch(avisarErro)
@@ -234,14 +263,6 @@ export default function App() {
     }
     notify('Tabela restaurada.')
   }
-  function salvarProfessorAtual(nome) {
-    if (firebaseAtivo) {
-      cloud.salvarProfessorAtual(nome).catch(avisarErro)
-    } else {
-      setData((d) => ({ ...d, professorAtual: nome }))
-    }
-    notify('Preferência salva.')
-  }
 
   // ---------- backup ----------
   function exportarBackup() {
@@ -253,7 +274,7 @@ export default function App() {
     if (firebaseAtivo) {
       notify('Restaurando backup no Firestore…')
       cloud
-        .restaurarBackupNoFirestore(novoEstado)
+        .restaurarBackupNoFirestore(novoEstado, meuUid, perfil && perfil.role === 'mestre')
         .then(() => notify('Backup restaurado.'))
         .catch(avisarErro)
     } else {
@@ -261,16 +282,12 @@ export default function App() {
       notify('Backup restaurado.')
     }
   }
-  function backupESair() {
-    exportarBackup()
-    patchUi({ exited: true })
-  }
 
-  // ---------- dados de exemplo (tela Painel, quando vazio) ----------
+  // ---------- dados de exemplo (tela Painel, quando vazia) ----------
   function carregarDemo() {
     const turmaId = uid('turma')
     const ano = anoAtual
-    const professorAtual = data.professorAtual || 'Prof. Jorge Lima Cardoso'
+    const professorNome = (perfil && perfil.email) || 'Prof. Jorge Lima Cardoso'
     const nomes = [
       'Ana Beatriz Souza',
       'Carlos Eduardo Lima',
@@ -295,7 +312,7 @@ export default function App() {
         desconto: sit.desconto,
         data: new Date().toISOString().slice(0, 10),
         observacao,
-        lancadoPor: professorAtual,
+        lancadoPor: professorNome,
       }
     }
     const registrosNovos = [
@@ -307,14 +324,13 @@ export default function App() {
       addReg('Fernanda Ribeiro', '3.1', 'Discussão com colega em sala.'),
       addReg('Fernanda Ribeiro', '2.1', 'Chegou atrasada.'),
     ]
-    const turma = { id: turmaId, nome: '3º ADM T1', disciplina: 'Gestão de Pessoas', professor: professorAtual, ano }
+    const turma = { id: turmaId, nome: '3º ADM T1', disciplina: 'Gestão de Pessoas', professor: professorNome, ano }
 
     if (firebaseAtivo) {
-      cloud.carregarDemoNoFirestore(turma, alunosNovos, registrosNovos, professorAtual).catch(avisarErro)
+      cloud.carregarDemoNoFirestore(turma, alunosNovos, registrosNovos, meuUid).catch(avisarErro)
     } else {
       setData((d) => ({
         ...d,
-        professorAtual,
         turmas: [...d.turmas, turma],
         alunos: [...d.alunos, ...alunosNovos],
         registros: [...d.registros, ...registrosNovos],
@@ -346,7 +362,6 @@ export default function App() {
     salvarSituacao,
     excluirSituacao,
     restaurarSituacoesPadrao,
-    salvarProfessorAtual,
     exportarBackup,
     restaurarBackup,
     carregarDemo,
@@ -361,22 +376,16 @@ export default function App() {
     { id: 'backup', label: 'Backup', icon: '⭳' },
   ]
 
-  if (ui.exited) {
+  if (firebaseAtivo && user === undefined) {
     return (
-      <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-        <div className="card" style={{ maxWidth: 480, textAlign: 'center' }}>
-          <h2>Sessão encerrada</h2>
-          <p style={{ color: 'var(--text-secondary)', margin: '10px 0 18px' }}>
-            O backup foi baixado. Você pode fechar esta aba com segurança.
-          </p>
-          <button className="btn btn-primary" onClick={() => patchUi({ exited: false })}>
-            Voltar ao sistema
-          </button>
-        </div>
+      <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-secondary)' }}>
+        Verificando sessão…
       </div>
     )
   }
-
+  if (firebaseAtivo && user === null) {
+    return <Login />
+  }
   if (carregando) {
     return (
       <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-secondary)' }}>
@@ -384,7 +393,6 @@ export default function App() {
       </div>
     )
   }
-
   if (erroConexao) {
     return (
       <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -410,7 +418,7 @@ export default function App() {
       <div id="overlay" className={ui.sidebarOpen ? 'show' : ''} onClick={() => patchUi({ sidebarOpen: false })} />
 
       <div id="shell">
-        <Sidebar menu={MENU} ui={ui} patchUi={patchUi} onExit={backupESair} />
+        <Sidebar menu={MENU} ui={ui} patchUi={patchUi} perfil={perfil} onSair={firebaseAtivo ? sair : null} onBackup={exportarBackup} />
         <main id="content">
           {ui.view === 'dashboard' && <Dashboard data={data} ui={ui} patchUi={patchUi} actions={actions} />}
           {ui.view === 'turmas' && (
@@ -420,7 +428,7 @@ export default function App() {
             <Avaliacao data={data} ui={ui} patchUi={patchUi} actions={actions} alunosDaTurma={alunosDaTurma} />
           )}
           {ui.view === 'relatorios' && <Relatorios data={data} ui={ui} patchUi={patchUi} alunosDaTurma={alunosDaTurma} />}
-          {ui.view === 'criterios' && <Criterios data={data} ui={ui} patchUi={patchUi} actions={actions} />}
+          {ui.view === 'criterios' && <Criterios data={data} ui={ui} patchUi={patchUi} actions={actions} perfil={perfil} />}
           {ui.view === 'backup' && <Backup data={data} actions={actions} />}
         </main>
       </div>
