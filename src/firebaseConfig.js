@@ -6,12 +6,12 @@
 // strings vazias.
 
 export const firebaseConfig = {
-  apiKey: "",
-  authDomain: "",
-  projectId: "",
-  storageBucket: "",
-  messagingSenderId: "",
-  appId: "",
+  apiKey: "AIzaSyCTjBbb5qvV32Uin1u0-fLe6-222vXYMF4",
+  authDomain: "plataforma-raac-cedup.firebaseapp.com",
+  projectId: "plataforma-raac-cedup",
+  storageBucket: "plataforma-raac-cedup.firebasestorage.app",
+  messagingSenderId: "638161148802",
+  appId: "1:638161148802:web:d2e8274bc435db5a00cd9b",
 }
 
 // true assim que os campos acima estiverem preenchidos — o restante do
